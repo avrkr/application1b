@@ -29,14 +29,43 @@ app.get('/api/health', (req, res) => {
 });
 
 // Socket.io connection
+const queues = {
+  video: [],
+  text: []
+};
+
 io.on('connection', (socket) => {
   console.log('New client connected:', socket.id);
+  let currentRoom = null;
+  let currentType = null;
 
-  socket.on('join_room', (room) => {
-    socket.join(room);
-    console.log(`User ${socket.id} joined room ${room}`);
-    // Notify others in the room that a new user has joined for WebRTC
-    socket.to(room).emit('user_joined', socket.id);
+  socket.on('find_match', ({ type, interest }) => {
+    // Basic matching logic: just pair with the next person in the queue of the same type
+    // In a real app, you'd filter by interest here
+    
+    const queue = queues[type];
+    
+    if (queue.length > 0) {
+      // Found a partner
+      const partner = queue.pop();
+      const roomID = `${socket.id}#${partner.id}`;
+      
+      socket.join(roomID);
+      partner.socket.join(roomID);
+      
+      currentRoom = roomID;
+      currentType = type;
+      
+      // Notify both users
+      socket.emit('match_found', { partnerId: partner.id, initiator: true });
+      partner.socket.emit('match_found', { partnerId: socket.id, initiator: false });
+      
+      console.log(`Matched ${socket.id} with ${partner.id} in room ${roomID}`);
+    } else {
+      // No partner found, add to queue
+      queue.push({ id: socket.id, socket, interest });
+      console.log(`Added ${socket.id} to ${type} queue`);
+    }
   });
 
   socket.on('offer', (data) => {
@@ -61,15 +90,53 @@ io.on('connection', (socket) => {
   });
 
   socket.on('send_message', (data) => {
-    io.to(data.room).emit('receive_message', {
-      ...data,
-      sender: socket.id,
-      timestamp: new Date().toISOString()
+    // Send to the specific target user instead of a room broadcast if possible, 
+    // or use the room if we tracked it properly. 
+    // Since the frontend sends 'target', we can use socket.to(target)
+    if (data.target) {
+      socket.to(data.target).emit('receive_message', {
+        text: data.text,
+        sender: socket.id,
+        timestamp: new Date().toISOString()
+      });
+    }
+  });
+
+  socket.on('skip', () => {
+    // Leave current room if any
+    if (currentRoom) {
+      socket.to(currentRoom).emit('partner_disconnected');
+      socket.leave(currentRoom);
+      currentRoom = null;
+    }
+    
+    // Remove from queue if currently waiting
+    ['video', 'text'].forEach(type => {
+      const index = queues[type].findIndex(u => u.id === socket.id);
+      if (index !== -1) {
+        queues[type].splice(index, 1);
+      }
     });
+
+    // Re-trigger find match logic from client side or handle here?
+    // Client will emit 'find_match' again after skip.
   });
 
   socket.on('disconnect', () => {
     console.log('Client disconnected:', socket.id);
+    
+    // Notify partner
+    if (currentRoom) {
+      socket.to(currentRoom).emit('partner_disconnected');
+    }
+
+    // Remove from queues
+    ['video', 'text'].forEach(type => {
+      const index = queues[type].findIndex(u => u.id === socket.id);
+      if (index !== -1) {
+        queues[type].splice(index, 1);
+      }
+    });
   });
 });
 
