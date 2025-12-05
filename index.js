@@ -35,6 +35,29 @@ io.on('connection', (socket) => {
   socket.on('join_room', (room) => {
     socket.join(room);
     console.log(`User ${socket.id} joined room ${room}`);
+    // Notify others in the room that a new user has joined for WebRTC
+    socket.to(room).emit('user_joined', socket.id);
+  });
+
+  socket.on('offer', (data) => {
+    socket.to(data.target).emit('offer', {
+      sdp: data.sdp,
+      caller: socket.id
+    });
+  });
+
+  socket.on('answer', (data) => {
+    socket.to(data.target).emit('answer', {
+      sdp: data.sdp,
+      responder: socket.id
+    });
+  });
+
+  socket.on('ice_candidate', (data) => {
+    socket.to(data.target).emit('ice_candidate', {
+      candidate: data.candidate,
+      sender: socket.id
+    });
   });
 
   socket.on('send_message', (data) => {
